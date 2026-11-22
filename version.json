@@ -1,0 +1,42 @@
+{
+ "commit": "614abb13fc1137eb02371a7e227b4c3e56ec64fa",
+ "date": "2026-11-22 19:42 UTC",
+ "message": "Add files via upload",
+ "notes": [
+  "Beginner guide for the two games that need a file from your own copy (THEATRHYTHM, DELTARUNE): do...",
+  "The update screen (ZL) now lists what each update changes, like these notes.",
+  "Fixed: THEATRHYTHM: the app now finds global-metadata.dat where nxdumptool really saves it (sdmc:...",
+  "Module: Ignores homebrew started like a game (Homebrew Menu, forwarders, launchers such as homeNX...",
+  "Module: The raw NAND save probes are off. Create an empty sdmc:/switch/TrophyNX/probe.flag to tur...",
+  "Module: Fixed a display layer that could stay open if a popup failed to start.",
+  "Module: New health check: health: lines in live_log.txt show how much of the shared system resour..."
+ ],
+ "app_version": "0.11.2",
+ "module_version": "0.8.2",
+ "files": [
+  {
+   "path": "atmosphere/contents/420000000000AC01/exefs.nsp",
+   "asset": "sys-trophynx.nsp",
+   "size": 607428,
+   "sha256": "b1c25aacb0b8859006f702f54770c6e80894c564416234b8bf4b5a8d07496931"
+  },
+  {
+   "path": "atmosphere/contents/420000000000AC01/flags/boot2.flag",
+   "asset": "sys-trophynx-flags-boot2.flag",
+   "size": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "path": "atmosphere/contents/420000000000AC01/toolbox.json",
+   "asset": "sys-trophynx-toolbox.json",
+   "size": 92,
+   "sha256": "950061068b5fd9c554891f1e21538f2755dfd2c81073ef753fef0eadc9d7af49"
+  },
+  {
+   "path": "switch/TrophyNX.nro",
+   "asset": "TrophyNX.nro",
+   "size": 3348174,
+   "sha256": "53a8f91e88e40db25738891c3acf5513c626d95b6430aed57101243c664c48db"
+  }
+ ]
+}
