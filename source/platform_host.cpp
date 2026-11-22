@@ -123,6 +123,18 @@ int plat::httpGet(const std::string& url, const std::vector<std::string>& header
     if (progress) progress((int)(out.size() >> 10), (int)(out.size() >> 10), ctx);
     return 200;
 }
+// Site sync on PC: the body is written to $ACH_SYNC_OUT (if set) and answered with 200 {"ok":true}.
+// A token "bad" in the Authorization header -> 401, like the real server.
+int plat::httpPost(const std::string& url, const std::vector<std::string>& headers, const std::string& body,
+                   std::vector<uint8_t>& out, std::string& err) {
+    out.clear();
+    for (const std::string& h : headers) if (h == "Authorization: Bearer bad") { out.assign({'{', '}'}); return 401; }
+    if (url.find("unreachable") != std::string::npos) { err = "Could not resolve host (test)"; return 0; }
+    if (const char* f = getenv("ACH_SYNC_OUT")) writeFile(f, body);
+    const char* ok = "{\"ok\":true}";
+    out.assign(ok, ok + strlen(ok));
+    return 200;
+}
 static std::string g_self;
 void plat::setSelfPath(const std::string& p) { g_self = p; }
 std::string plat::selfPath() { return g_self.empty() ? g_root + "/sd/switch/TrophyNX.nro" : g_self; }
@@ -148,6 +160,7 @@ bool plat::poll() {
     else if (t == "Y") g_down = BTN_Y; else if (t == "UP") g_down = BTN_UP; else if (t == "DOWN") g_down = BTN_DOWN;
     else if (t == "LEFT") g_down = BTN_LEFT; else if (t == "RIGHT") g_down = BTN_RIGHT; else if (t == "PLUS") g_down = BTN_PLUS;
     else if (t == "R") g_down = BTN_R; else if (t == "ZR") g_down = BTN_ZR; else if (t == "ZL") g_down = BTN_ZL; else if (t == "L") g_down = BTN_L; else if (t == "MINUS") g_down = BTN_MINUS;
+    else if (t == "STICKR") g_down = BTN_STICKR;
     return true;
 }
 uint32_t* plat::beginDraw(int& stride) { stride = 1280; return g_px.data(); }

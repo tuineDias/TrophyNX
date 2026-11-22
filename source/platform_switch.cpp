@@ -34,6 +34,7 @@ static uint32_t mapButtons(uint64_t k) {
     if (k & HidNpadButton_ZL) b |= plat::BTN_ZL;
     if (k & HidNpadButton_R) b |= plat::BTN_R;
     if (k & HidNpadButton_ZR) b |= plat::BTN_ZR;
+    if (k & HidNpadButton_StickR) b |= plat::BTN_STICKR;
     return b;
 }
 
@@ -274,6 +275,37 @@ int plat::httpGet(const std::string& url, const std::vector<std::string>& header
     curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, httpProgress);
     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &hc);
     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(c, CURLOPT_ERRORBUFFER, ebuf);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 100L);   // give up after 30 s below 100 B/s
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
+    CURLcode r = curl_easy_perform(c);
+    long code = 0;
+    if (r == CURLE_OK) curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    else err = std::string(curl_easy_strerror(r)) + (ebuf[0] ? std::string(": ") + ebuf : "");
+    curl_slist_free_all(hl);
+    curl_easy_cleanup(c);
+    return (int)code;
+}
+
+int plat::httpPost(const std::string& url, const std::vector<std::string>& headers, const std::string& body,
+                   std::vector<uint8_t>& out, std::string& err) {
+    out.clear();
+    if (!netInit(err)) return 0;
+    CURL* c = curl_easy_init();
+    if (!c) { err = "curl init failed"; return 0; }
+    struct curl_slist* hl = nullptr;
+    for (const std::string& h : headers) hl = curl_slist_append(hl, h.c_str());
+    HttpCtx hc = {&out, nullptr, nullptr};
+    char ebuf[CURL_ERROR_SIZE] = "";
+    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER, hl);
+    curl_easy_setopt(c, CURLOPT_POST, 1L);
+    curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.data());
+    curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, httpWrite);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &hc);
     curl_easy_setopt(c, CURLOPT_ERRORBUFFER, ebuf);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 100L);   // give up after 30 s below 100 B/s

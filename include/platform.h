@@ -46,6 +46,10 @@ namespace plat {
     // HTTPS GET into memory. Returns the HTTP status, or 0 on a network/TLS error (err says why).
     int httpGet(const std::string& url, const std::vector<std::string>& headers, std::vector<uint8_t>& out,
                 ProgressFn progress, void* ctx, std::string& err);
+    // HTTPS POST of `body` (Content-Type is up to the caller's headers). The answer goes to `out`.
+    // Returns the HTTP status, or 0 on a network/TLS error (err says why). Used by the site sync (sync.cpp).
+    int httpPost(const std::string& url, const std::vector<std::string>& headers, const std::string& body,
+                 std::vector<uint8_t>& out, std::string& err);
     // Sockets (shared by httpGet and the Wi-Fi share server). Starts them once; false + err if no network.
     bool netInit(std::string& err);
     std::string localIp();
@@ -70,6 +74,7 @@ namespace plat {
     enum Button : uint32_t {
         BTN_A = 1, BTN_B = 2, BTN_X = 4, BTN_Y = 8, BTN_UP = 16, BTN_DOWN = 32,
         BTN_LEFT = 64, BTN_RIGHT = 128, BTN_PLUS = 256, BTN_MINUS = 512, BTN_L = 1024, BTN_R = 2048, BTN_ZR = 4096, BTN_ZL = 8192,
+        BTN_STICKR = 16384,   // right stick pressed in (R3): send to the site
     };
     bool poll();                          // false = app should quit; updates buttons
     uint32_t* beginDraw(int& stride);     // 1280x720 RGBA8888 buffer

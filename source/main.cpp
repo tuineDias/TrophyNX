@@ -11,6 +11,7 @@
 #include "update.h"
 #include "captures.h"
 #include "share_server.h"
+#include "sync.h"
 
 // ---------------------------------------------------------------- theme
 static const uint32_t C_BG = 0xFF12141A, C_PANEL = 0xFF1B1E26, C_PANEL_HI = 0xFF272B36, C_LINE = 0xFF2E3340;
@@ -334,6 +335,7 @@ static void drawFooter(UI& ui) {
     buttonHint(ui, x, 680, "X", "Debug");
     buttonHint(ui, x, 680, "-", ui.focusAch ? "Re-lock" : (ui.sel == 0 ? "Re-lock all" : "Re-lock game"));
     buttonHint(ui, x, 680, "ZL", "Update");
+    buttonHint(ui, x, 680, "R3", "Sync");
     buttonHint(ui, x, 680, "+", "Exit");
     std::string v = "v" APP_VERSION;
     ui.font.draw(c, 1256 - ui.font.measure(16, v), 684, 16, v, C_DIM);
@@ -795,6 +797,13 @@ int main(int argc, char** argv) {
                     ui.toast = std::to_string(sum.withSave) + " saves checked: " + std::to_string(sum.draftable) + " draftable, " +
                                std::to_string(sum.text) + " text, " + std::to_string(sum.binary) + " binary. Upload scan_bundle.json.";
                 } else ui.toast = "Scan failed: " + sum.error;
+            }
+            if (down & plat::BTN_STICKR) {   // R3: send the achievements to the TrophyNX Hub site
+                ui.loadingLabel = "Sending to the site";
+                drawLoading(ui, 0, 0);
+                std::string syncMsg;
+                syncToSite(ui.lib, syncMsg);
+                ui.toast = syncMsg;
             }
             if (down & plat::BTN_ZL) {
                 ui.loadingLabel = "Checking for updates";
