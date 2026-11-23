@@ -181,6 +181,15 @@ bool plat::openSave(uint64_t id) {
 
 std::string plat::lastError() { return g_lastError; }
 
+// The live module is "on" when atmosphere/contents/420000000000AC01/flags/boot2.flag exists (what Atmosphère
+// and Ultrahand use to start it at boot). Without it the app never starts the module itself.
+static bool liveModuleEnabled() {
+    FILE* flag = fopen("sdmc:/atmosphere/contents/420000000000AC01/flags/boot2.flag", "rb");
+    if (!flag) return false;
+    fclose(flag);
+    return true;
+}
+
 std::string plat::liveModuleStatus() {
     const u64 LIVE_ID = 0x420000000000AC01ULL;
     char b[200];
@@ -195,9 +204,8 @@ std::string plat::liveModuleStatus() {
     FILE* f = fopen("sdmc:/atmosphere/contents/420000000000AC01/exefs.nsp", "rb");
     if (!f) return "not installed (atmosphere/contents/420000000000AC01/exefs.nsp missing)";
     fclose(f);
-    FILE* flag = fopen("sdmc:/atmosphere/contents/420000000000AC01/flags/boot2.flag", "rb");
-    bool hasFlag = flag != nullptr;
-    if (flag) fclose(flag);
+    // No boot2.flag = the player turned the module off (Ultrahand or by renaming it): never start it from here.
+    if (!liveModuleEnabled()) return "turned off (no flags/boot2.flag): not started";
     Result rc = pmshellInitialize();
     if (R_FAILED(rc)) {
         snprintf(b, sizeof(b), "not running; pm:shell unavailable rc=0x%X", rc);
@@ -209,10 +217,9 @@ std::string plat::liveModuleStatus() {
     loc.storageID = NcmStorageId_None;
     rc = pmshellLaunchProgram(0, &loc, &pid);
     pmshellExit();
-    if (R_SUCCEEDED(rc)) snprintf(b, sizeof(b), "was not running -> started now (pid %llu)%s", (unsigned long long)pid,
-                                  hasFlag ? "" : "; boot2.flag missing, it won't start at boot");
-    else snprintf(b, sizeof(b), "not running and could not start: rc=0x%X (module %u, desc %u)%s", rc, R_MODULE(rc),
-                  R_DESCRIPTION(rc), hasFlag ? "" : "; boot2.flag missing");
+    if (R_SUCCEEDED(rc)) snprintf(b, sizeof(b), "was not running -> started now (pid %llu)", (unsigned long long)pid);
+    else snprintf(b, sizeof(b), "not running and could not start: rc=0x%X (module %u, desc %u)", rc, R_MODULE(rc),
+                  R_DESCRIPTION(rc));
     return b;
 }
 
@@ -337,6 +344,11 @@ bool plat::restartLiveModule(std::string& msg) {
         snprintf(b, sizeof(b), "the old live module (pid %llu) did not stop: reboot to use the new one", (unsigned long long)oldPid);
         msg = b;
         return false;
+    }
+    if (!liveModuleEnabled()) {   // turned off: the new file is installed, but it is not started
+        pmshellExit();
+        msg = "live module updated, not started (turned off: no boot2.flag)";
+        return true;
     }
     NcmProgramLocation loc;
     memset(&loc, 0, sizeof(loc));

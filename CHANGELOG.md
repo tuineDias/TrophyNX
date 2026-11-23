@@ -10,6 +10,26 @@ How to write a section (see `tools/release/changelog.py`):
   written for players: what changed for them, and what they need to do, if anything.
 - A release without a section for its version fails in CI.
 
+## 0.11.4 (2026-11-23)
+
+Fixes the console shutting down (error 2001-0132) when a game or sphaira starts.
+
+### Fixed
+- On consoles with several background modules, the console could shut down with error 2001-0132 right after booting, or when starting a game, sphaira or TrophyNX. All background modules share one block of system memory, and TrophyNX kept 4 MB of it reserved the whole time. It now keeps 2 MB, and only takes more for a moment when there is room to spare.
+
+### Live module 0.8.6
+- The health check now really reads the shared system resources (it always said "resource limit unreadable"), and logs them at every game start and close in `live_log.txt`.
+- Heap sized on demand: 2 MB while idle, 4 MB only while a popup is shown or a save is read, and only if at least 6 MB stay free for the other modules. Without room, popups and save checks run in the 2 MB heap.
+- Safe mode no longer turns on for threads (the module never creates any after boot), and the scan on close checks resources again right before it runs.
+- Tip: if the console still crashes, turn off background modules you don't use (Ultrahand), e.g. emuiibo or sys-clk.
+
+## 0.11.3
+
+Turning the live module off now really keeps it off, even when you open TrophyNX.
+
+### Fixed
+- The app started the live module every time it opened, even after you turned it off (Ultrahand, or by renaming/removing `flags/boot2.flag`). Now, without `boot2.flag`, the app never starts it, and an update installs the new module without starting it.
+
 ## 0.11.2
 
 Safer live module, a beginner guide for game files, and THEATRHYTHM's password found again.

@@ -10,6 +10,7 @@
 #include "popup.h"
 #include "store.h"
 #include "popup_draw.h"
+#include "heap.h"
 #include <switch.h>
 #include <cstdio>
 #include <cstring>
@@ -47,6 +48,7 @@ static void stage(const char* s) { g_stageTick = armGetSystemTick(); g_stage = s
 // no display layer at all, Ultrahand toast only), set by the main loop's health check.
 static volatile int g_layersOpen = 0;
 static volatile bool g_safe = false;
+static const size_t POPUP_MIN_HEAP = 1400 * 1024;   // card peak ~1 MB + icon decode, with some slack
 
 // ---------------------------------------------------------------- config
 struct PopupConfig {
@@ -146,9 +148,8 @@ static const PopupImage* gameIcon(uint64_t tid) {
     delete ctl;
     nsExit();
     if (g_gameIcon.w) return &g_gameIcon;
-    static PopupImage fallback;
-    if (!fallback.w) decodeTo(icon_jpg, (int)icon_jpg_size, iconSide(), fallback);
-    return fallback.w ? &fallback : nullptr;
+    decodeTo(icon_jpg, (int)icon_jpg_size, iconSide(), g_gameIcon);   // trophy icon, freed with the popup
+    return g_gameIcon.w ? &g_gameIcon : nullptr;
 }
 
 static bool achievementArt(const PopupRequest& r, PopupImage& out) {
@@ -315,10 +316,22 @@ static void worker(void*) {
         if (g_safe && cfg.style != "both") { PLOG("popup: safe mode, toast instead of a display layer"); ultrahandToast(r); g_busy = false; continue; }
         if (cfg.style == "both") ultrahandToast(r);
         if (g_safe) { g_busy = false; continue; }
+        // The card (~1 MB: 720x150 render, 16-bit copy, 2 buffers + linear) fits in the idle heap; the big
+        // heap is only a bonus. Toast only if even the idle heap is too full.
+        bool big = heapAcquire("popup layer");
+        if (!big && heapFree() < POPUP_MIN_HEAP) {
+            PLOG("popup: only %u KB free in the heap - Ultrahand toast instead", (unsigned)(heapFree() >> 10));
+            if (cfg.style != "both") ultrahandToast(r);
+            g_busy = false;
+            continue;
+        }
         if (!showCustom(r, cfg)) {
             PLOG("popup: custom popup failed for %s - Ultrahand toast instead", r.achId.c_str());
             if (cfg.style != "both") ultrahandToast(r);
         }
+        g_iconTid = 0;               // drop the cached icon: it would keep the big heap from shrinking
+        g_gameIcon = PopupImage();
+        if (big) heapRelease();
         g_stage = nullptr;
         g_busy = false;
         svcSleepThread(300000000ULL);   // small gap between queued popups

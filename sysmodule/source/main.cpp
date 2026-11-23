@@ -23,8 +23,9 @@
 #include "closescan.h"
 #include "capture.h"
 #include "store.h"
+#include "heap.h"
 
-#define MODULE_VERSION "0.8.2"
+#define MODULE_VERSION "0.8.6"
 static const u64 BOTW_ID = 0x01007EF00011E000ULL;
 
 extern "C" {
@@ -34,14 +35,7 @@ u32 __nx_applet_type = AppletType_None;
 u32 __nx_nv_transfermem_size = 0x15000;
 void __libnx_init_time(void);
 u32 __nx_fs_num_sessions = 1;
-#define INNER_HEAP_SIZE 0x400000   // 4 MB: flag scanner + popup layer (two 16-bit 1080p-scale buffers) + scan on close (one save file at a time)
-void __libnx_initheap(void) {
-    static char inner_heap[INNER_HEAP_SIZE];
-    extern char* fake_heap_start;
-    extern char* fake_heap_end;
-    fake_heap_start = inner_heap;
-    fake_heap_end = inner_heap + sizeof(inner_heap);
-}
+// Heap: __libnx_initheap is in heap.cpp (2 MB while idle, 4 MB only while a popup or a save read needs it).
 
 void __appInit(void) {
     if (R_FAILED(smInitialize())) diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_SM));
@@ -305,7 +299,9 @@ static Handle g_resLimit = INVALID_HANDLE;
 static bool readUsage(s64 cur[5], s64 lim[5]) {
     if (g_resLimit == INVALID_HANDLE) {
         u64 h = 0;
-        if (R_FAILED(svcGetInfo(&h, InfoType_ResourceLimit, CUR_PROCESS_HANDLE, 0)) || h == 0) return false;
+        // InfoType_ResourceLimit takes INVALID_HANDLE (the kernel rejects any process handle, even the
+        // pseudo-handle CUR_PROCESS_HANDLE, with InvalidHandle): it always means the current process.
+        if (R_FAILED(svcGetInfo(&h, InfoType_ResourceLimit, INVALID_HANDLE, 0)) || h == 0) return false;
         g_resLimit = (Handle)h;   // kept for the whole run: one handle, opened once
     }
     for (int i = 0; i < 5; i++) {
@@ -315,14 +311,11 @@ static bool readUsage(s64 cur[5], s64 lim[5]) {
     return true;
 }
 
-extern "C" char* fake_heap_end;   // end of the fixed heap (__libnx_initheap)
-static size_t heapFree() {
-    struct mallinfo mi = mallinfo();
-    char* top = (char*)sbrk(0);
-    return (size_t)mi.fordblks + ((top && fake_heap_end > top) ? (size_t)(fake_heap_end - top) : 0);
-}
 
-// Returns true when the system is close to a limit (>= 90 % of threads/events/transfer/sessions).
+// Returns true when the system is close to a limit (>= 90 %) on something the module's tasks use:
+// sessions, events, transfer memory (popup layer: vi/nv; save reads: fs). Threads are logged but don't
+// count: after start the module creates none (the popup thread exists from boot). Memory is checked by
+// heapAcquire() right before each task that needs more of it.
 static bool healthCheck(const char* why, bool log) {
     s64 cur[5] = {}, lim[5] = {};
     bool ok = readUsage(cur, lim);
@@ -330,17 +323,20 @@ static bool healthCheck(const char* why, bool log) {
     std::string worst;
     if (ok) {
         for (int i = 1; i < 5; i++) {
-            if (lim[i] > 0 && cur[i] * 10 >= lim[i] * 9) { tight = true; worst += std::string(" ") + RES_NAMES[i]; }
+            if (lim[i] > 0 && cur[i] * 10 >= lim[i] * 9) {
+                worst += std::string(" ") + RES_NAMES[i];
+                if (i != 1) tight = true;   // 1 = threads: high, but the module never adds any
+            }
         }
     }
-    if (log || tight) {
+    if (log) {
         if (!ok) logf("health (%s): resource limit unreadable; heap free %u KB, popup layers open %d", why,
                       (unsigned)(heapFree() >> 10), popupLayersOpen());
         else logf("health (%s): sessions %lld/%lld, events %lld/%lld, threads %lld/%lld, transfer %lld/%lld, memory %lld/%lld MB "
-                  "(system group); heap free %u KB, popup layers open %d%s%s", why,
+                  "(system group); heap %u KB, free %u KB, popup layers open %d%s%s", why,
                   (long long)cur[4], (long long)lim[4], (long long)cur[2], (long long)lim[2], (long long)cur[1], (long long)lim[1],
                   (long long)cur[3], (long long)lim[3], (long long)(cur[0] >> 20), (long long)(lim[0] >> 20),
-                  (unsigned)(heapFree() >> 10), popupLayersOpen(), tight ? " - LOW:" : "", worst.c_str());
+                  (unsigned)(heapSize() >> 10), (unsigned)(heapFree() >> 10), popupLayersOpen(), worst.empty() ? "" : " - high:", worst.c_str());
     }
     return tight;
 }
@@ -349,6 +345,7 @@ static bool healthCheck(const char* why, bool log) {
 int main(int, char**) {
     mkdir(dataDir().c_str(), 0777);
     logf("sys-trophynx " MODULE_VERSION " started");
+    heapSetLog(logf);
     finishPendingAppUpdate();
     popupStart(logf);
     Result rc;
@@ -415,25 +412,33 @@ int main(int, char**) {
             if (s != safe) {
                 safe = s;
                 popupSetSafeMode(safe);
+                healthCheck(safe ? "safe mode on" : "safe mode off", true);
                 logf(safe ? "SAFE MODE: system resources low - no popups layers, captures, scans or probes until it recovers"
                           : "safe mode off: system resources back to normal");
             }
         }
-        if (closedTid && safe) { logf("close scan: %016llX skipped (safe mode)", (unsigned long long)closedTid); closedTid = 0; }
         if (closedTid && now >= closedAt && popupIdle()) {   // after any popup: its buffers share the heap
+            if (healthCheck("before close scan", true)) {   // fresh reading: the game that just closed freed a lot
+                logf("close scan: %016llX skipped (system resources low)", (unsigned long long)closedTid);
+                closedTid = 0;
+                continue;
+            }
             // 1) save capture (games the player records, see captures.h), 2) scan on close
             bool locked = false;
+            bool big = heapAcquire("scan on close");   // without it: files that don't fit are skipped (logged)
             if (!closedCaptured) {
                 if (captureOnClose(closedTid, closedUid, closedMinutes, logf) == CAPSTEP_LOCKED) locked = true;
                 else closedCaptured = true;
             }
             if (!locked) locked = closeScan(closedTid, closedUid, logf) == CS_LOCKED;
+            if (big) heapRelease();
             if (locked && ++closedTries < 4) closedAt = now + 5;   // save still in use: try again
             else { closedTid = 0; healthCheck("after close scan", true); }
         }
         if (!running) {
             if (curPid) {
                 logf("game closed (pid %llu)", (unsigned long long)curPid);
+                healthCheck("game closed", true);
                 if (curReal) gameEnded(curTid, now);
             }
             if (attached) dmntchtForceCloseCheatProcess();   // never leave dmnt pointing at a dead process
@@ -460,6 +465,7 @@ int main(int, char**) {
             logf("game started: %016llX%s", (unsigned long long)tid,
                  watching ? " -> watching (live achievements)"
                  : curReal ? "" : hbl ? " (homebrew through this game: ignored)" : " (homebrew/forwarder: ignored)");
+            healthCheck("game started", true);   // system group usage at each launch: where crashes happen
         }
         // Save-image probe (opt-in, real games only): once after 60 s, again after 5 min.
         if (probesOn && curReal && !safe && ((probes == 0 && now - startedAt >= 60) || (probes == 1 && now - startedAt >= 300))) {
