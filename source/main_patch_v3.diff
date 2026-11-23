@@ -1,0 +1,121 @@
+# TrophyNX main.cpp patch - Full Sync Integration (corrected for platform abstraction)
+# Apply with: patch -p1 < main_patch_v3.diff
+
+--- a/source/main.cpp
++++ b/source/main.cpp
+@@ -1,4 +1,4 @@
+-// TrophyNX - Nintendo Switch Achievement Tracker
++// TrophyNX - Nintendo Switch Achievement Tracker (with Sync)
+ // Copyright (c) 2023-2024 Imp3r1us
+ // SPDX-License-Identifier: MIT
+
+@@ -10,6 +10,8 @@
+ #include "save_formats.h"
+ #include "scan.h"
+ #include "share_server.h"
++#include "sync.h"
++#include "sync_ui.h"
+ #include "update.h"
+
+ // ---------------------------------------------------------------------------
+@@ -120,6 +122,12 @@ namespace {
+     bool showDebug = false;
+     bool showConfirm = false;
+     bool showUpdate = false;
++    bool showSyncSettings = false;
++    trophynx::sync_ui::SyncSettings syncSettings;
++    int syncPopupTimer = 0;
++    std::string syncPopupText;
++    bool syncPopupSuccess = false;
++    bool syncSettingsLoaded = false;
+
+     // Capture/share
+     CaptureManager captures;
+@@ -450,6 +458,10 @@ void drawFooter(Canvas& fb) {
+     hint(fb, "ZL", "Update");
+     hint(fb, "ZR", "Share");
+     hint(fb, "L/R", "Tab");
++    hint(fb, "+", "Sync Settings");
++    hint(fb, "R3", "Sync Now");
+     hint(fb, "A", "Select");
+     hint(fb, "B", "Back");
+ }
+@@ -580,6 +592,26 @@ void handleInput(u64 keysDown, u64 keysHeld) {
+     if (keysDown & KEY_ZR) {
+         ui.showCaptures = true;
+     }
++
++    // Plus button - Open Sync Settings
++    if (keysDown & KEY_PLUS) {
++        if (!syncSettingsLoaded) {
++            trophynx::sync_ui::loadSettings(syncSettings);
++            syncSettingsLoaded = true;
++        }
++        showSyncSettings = true;
++    }
++
++    // R3 (right stick click) - Quick sync
++    if (keysDown & KEY_STICKR) {
++        if (!trophynx::sync_ui::isConfigured(syncSettings)) {
++            syncPopupText = "Configure in + menu first";
++            syncPopupSuccess = false;
++        } else {
++            auto result = trophynx::sync::doSync();
++            syncPopupText = result.message;
++            syncPopupSuccess = result.success;
++        }
++        syncPopupTimer = 180;  // 3 seconds
++    }
++
+     // D-Pad / Left stick - Navigation
+     if (keysDown & (KEY_UP | KEY_DUP)) {
+         if (ui.focus == Focus::GameList) {
+@@ -890,6 +918,30 @@ void drawPopup(Canvas& fb) {
+     }
+ }
+
++void drawSyncPopup(Canvas& fb) {
++    if (syncPopupTimer <= 0) return;
++    syncPopupTimer--;
++
++    const int w = 500;
++    const int h = 120;
++    const int x = (fb.w - w) / 2;
++    const int y = (fb.h - h) / 2;
++
++    fb.fillRect(x, y, w, h, 0xFF1A1A25);
++    fb.rect(x, y, w, h, syncPopupSuccess ? 0xFF4ADE80 : 0xFFF87171);
++    fb.text(x + 20, y + 30, syncPopupText.c_str(), 0xFFE8E8ED, 1.1f);
++    fb.text(x + 20, y + 70, syncPopupSuccess ? "Sucesso!" : "Erro", syncPopupSuccess ? 0xFF4ADE80 : 0xFFF87171, 0.9f);
++}
++
+ void drawDebug(Canvas& fb) {
+     // ... existing debug code ...
+ }
+@@ -950,6 +992,12 @@ void drawFrame(Canvas& fb) {
+     if (ui.showDebug) drawDebug(fb);
+     if (ui.showConfirm) drawConfirm(fb);
+     if (ui.showUpdate) drawUpdate(fb);
++    if (syncPopupTimer > 0) drawSyncPopup(fb);
++    if (showSyncSettings) {
++        if (!trophynx::sync_ui::drawSettingsScreen(fb, 0, 0)) {
++            showSyncSettings = false;
++        }
++    }
++    if (ui.showCaptures) drawCaptures(fb);
+ }
+@@ -960,6 +1008,18 @@ void handleInput(u64 keysDown, u64 keysHeld) {
+     if (ui.showDebug) { /* ... */ }
+     else if (ui.showConfirm) { /* ... */ }
+     else if (ui.showUpdate) { /* ... */ }
++    else if (showSyncSettings) {
++        if (!trophynx::sync_ui::handleSettingsInput(keysDown, keysHeld, syncSettings)) {
++            showSyncSettings = false;
++        }
++        return;
++    }
++    else if (ui.showCaptures) { /* ... */ }
++
+     // Main navigation
+     // ...
+ }

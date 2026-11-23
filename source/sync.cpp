@@ -1,20 +1,17 @@
 /**
  * TrophyNX Sync - Multi-user achievement sync for TrophyNX
- * Implementation file
+ * Implementation file (uses platform abstraction for HTTP)
  *
- * Integration notes:
- * - Include this in your build (add to Makefile SOURCES)
- * - Call trophynx::sync::doSync() from your button handler (e.g., R3 press)
- * - Requires: cJSON (already in TrophyNX), libcurl (via devkitPro), libnx
- * - Uses the same TLS/curl setup as update.cpp (ZL updater)
+ * Integration:
+ * - Include in build (add to Makefile SOURCES - auto-detected)
+ * - Call trophynx::sync::doSync() from button handler (KEY_RSTICK = R3)
+ * - Uses plat::httpPost (same TLS/curl as ZL updater)
  */
 
 #include "sync.h"
-#include <switch.h>
-#include <curl/curl.h>
+#include "platform.h"
 #include <cjson/cJSON.h>
 #include <fstream>
-#include <sstream>
 #include <algorithm>
 #include <cstring>
 
@@ -28,13 +25,6 @@ namespace trophynx::sync {
 static const char* CONFIG_PATH = "sdmc:/switch/TrophyNX/sync.json";
 static const size_t MAX_ICON_BASE64 = 50000; // ~50KB limit for base64 icon
 static const int HTTP_TIMEOUT_MS = 15000;
-
-// ===== cURL write callback =====
-static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* response) {
-    size_t total = size * nmemb;
-    response->append(static_cast<char*>(contents), total);
-    return total;
-}
 
 // ===== Base64 encoding =====
 static const char* B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -112,8 +102,6 @@ bool loadConfig(SyncConfig& config) {
 
 // ===== Get icon data from game =====
 static std::pair<const uint8_t*, size_t> getGameIconData(const Game& game) {
-    // TrophyNX stores icon as JPEG in game.iconJpeg (vector<uint8_t>)
-    // Check if we have access to it via the Game struct
     if (!game.iconJpeg.empty()) {
         return { game.iconJpeg.data(), game.iconJpeg.size() };
     }
@@ -124,8 +112,6 @@ static std::pair<const uint8_t*, size_t> getGameIconData(const Game& game) {
 std::vector<GameData> collectGameData() {
     std::vector<GameData> result;
 
-    // Access the global library from achievements.cpp
-    // This assumes the library is accessible (extern or global)
     extern Library g_library;  // Defined in achievements.cpp
 
     for (size_t i = 1; i < g_library.games.size(); ++i) { // Skip index 0 (Overview)
@@ -135,16 +121,17 @@ std::vector<GameData> collectGameData() {
         if (game.unlocked == 0) continue;
 
         GameData data;
-        data.titleId = "0" + std::to_string(game.id); // Convert to 16-char hex
-        while (data.titleId.length() < 16) data.titleId = "0" + data.titleId;
-        if (data.titleId.length() > 16) data.titleId = data.titleId.substr(data.titleId.length() - 16);
+        // Convert titleId to 16-char hex
+        char titleIdBuf[17];
+        snprintf(titleIdBuf, sizeof(titleIdBuf), "%016llX", (unsigned long long)game.id);
+        data.titleId = titleIdBuf;
 
         data.name = game.name;
         data.unlocked = game.unlocked;
         data.total = static_cast<int>(game.achs.size());
         data.points = game.points;
         data.maxPoints = game.maxPoints;
-        data.playtime = game.stats.playtime;
+        data.playtime = game.stats.playtime / 1000000000ULL; // Convert ns to seconds
         data.launches = game.stats.launches;
         data.lastPlayed = game.stats.lastPlayed;
         data.hasDefinition = game.hasDefinition;
@@ -153,10 +140,6 @@ std::vector<GameData> collectGameData() {
         auto [iconData, iconSize] = getGameIconData(game);
         if (iconData && iconSize > 0) {
             data.iconBase64 = encodeIconBase64(iconData, iconSize, MAX_ICON_BASE64);
-            // Also store raw JPEG as fallback (smaller games only)
-            if (iconSize <= 30000) {
-                data.iconJpeg = base64Encode(iconData, iconSize);
-            }
         }
 
         // Collect achievements
@@ -186,7 +169,7 @@ std::vector<GameData> collectGameData() {
     return result;
 }
 
-// ===== Send to API =====
+// ===== Send to API using plat::httpPost =====
 SyncResult sendToApi(const SyncConfig& config, const std::vector<GameData>& games) {
     SyncResult result;
 
@@ -199,7 +182,6 @@ SyncResult sendToApi(const SyncConfig& config, const std::vector<GameData>& game
         cJSON* gameObj = cJSON_CreateObject();
         cJSON_AddStringToObject(gameObj, "name", game.name.c_str());
         if (!game.iconBase64.empty()) cJSON_AddStringToObject(gameObj, "iconBase64", game.iconBase64.c_str());
-        else if (!game.iconJpeg.empty()) cJSON_AddStringToObject(gameObj, "iconJpeg", game.iconJpeg.c_str());
         cJSON_AddStringToObject(gameObj, "titleId", game.titleId.c_str());
         cJSON_AddNumberToObject(gameObj, "unlocked", game.unlocked);
         cJSON_AddNumberToObject(gameObj, "total", game.total);
@@ -237,48 +219,20 @@ SyncResult sendToApi(const SyncConfig& config, const std::vector<GameData>& game
         return result;
     }
 
-    // Initialize curl
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        free(jsonStr);
-        result.message = "Failed to initialize curl";
-        return result;
-    }
+    // Send via plat::httpPost (uses same curl/TLS as ZL updater)
+    std::vector<std::string> headers = {
+        "Content-Type: application/json",
+        "Authorization: Bearer " + config.token,
+        "User-Agent: TrophyNX/1.0"
+    };
 
-    std::string response;
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, ("Authorization: Bearer " + config.token).c_str());
-    headers = curl_slist_append(headers, "User-Agent: TrophyNX/1.0");
-
-    curl_easy_setopt(curl, CURLOPT_URL, config.apiUrl.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(jsonStr));
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, HTTP_TIMEOUT_MS);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    curl_easy_setopt(curl, CURLOPT_CAINFO, "sdmc:/switch/TrophyNX/cacert.pem"); // Optional: custom CA bundle
-
-    // Use the same TLS options as update.cpp (ZL updater)
-    // This ensures compatibility with Switch's TLS stack
-    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
-
+    std::vector<uint8_t> response;
+    std::string err;
+    int httpCode = plat::httpPost(config.apiUrl, headers, jsonStr, response, err);
     free(jsonStr);
 
-    CURLcode res = curl_easy_perform(curl);
-
-    long httpCode = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        result.message = "Network error: " + std::string(curl_easy_strerror(res));
+    if (httpCode <= 0) {
+        result.message = "Network error: " + err;
         return result;
     }
 
@@ -287,7 +241,8 @@ SyncResult sendToApi(const SyncConfig& config, const std::vector<GameData>& game
         return result;
     }
     if (httpCode == 400) {
-        result.message = "Invalid request: " + response;
+        std::string respStr(response.begin(), response.end());
+        result.message = "Invalid request: " + respStr;
         return result;
     }
     if (httpCode == 413) {
@@ -300,7 +255,8 @@ SyncResult sendToApi(const SyncConfig& config, const std::vector<GameData>& game
     }
 
     // Parse response
-    cJSON* respRoot = cJSON_Parse(response.c_str());
+    std::string respStr(response.begin(), response.end());
+    cJSON* respRoot = cJSON_Parse(respStr.c_str());
     if (!respRoot) {
         result.message = "Invalid server response";
         return result;

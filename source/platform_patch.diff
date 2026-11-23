@@ -1,0 +1,73 @@
+# Patch para adicionar suporte a R3 (StickR) na platform abstraction
+# Apply with: patch -p1 < platform_patch.diff
+
+--- a/include/platform.h
++++ b/include/platform.h
+@@ -78,6 +78,7 @@ namespace plat {
+     BTN_L = 1024, BTN_R = 2048, BTN_ZR = 4096, BTN_ZL = 8192,
++    BTN_STICKR = 16384,
+ };
+
+ bool poll();
+--- a/source/platform_switch.cpp
++++ b/source/platform_switch.cpp
+@@ -34,6 +34,7 @@ uint32_t mapButtons(uint64_t k) {
+     if (k & HidNpadButton_StickL) b |= plat::BTN_STICKL;
+     if (k & HidNpadButton_StickR) b |= plat::BTN_STICKR;
++    if (k & HidNpadButton_StickR) b |= plat::BTN_STICKR;
+     return b;
+ }
+
+@@ -296,3 +297,44 @@ std::string plat::localIp() {
+     return "";
+ }
++
++// HTTP POST para sync (usa mesmo TLS do updater ZL)
++int plat::httpPost(const std::string& url, const std::vector<std::string>& headers,
++                   const std::string& body, std::vector<uint8_t>& out, std::string& err) {
++    // Reutiliza a lógica de httpGet mas com POST
++    // Implementação simplificada usando curl como no update.cpp
++    Result rc = 0;
++    HttpcContext ctx;
++    rc = httpcOpenContext(&ctx, HTTPC_METHOD_POST, url.c_str(), 0);
++    if (R_FAILED(rc)) { err = "httpcOpenContext failed"; return -1; }
++
++    // Headers
++    for (const auto& h : headers) {
++        rc = httpcAddRequestHeaderField(&ctx, h.c_str(), "");
++        if (R_FAILED(rc)) { httpcCloseContext(&ctx); err = "add header failed"; return -1; }
++    }
++
++    // Body
++    rc = httpcAddPostDataAscii(&ctx, body.c_str(), body.length());
++    if (R_FAILED(rc)) { httpcCloseContext(&ctx); err = "add post data failed"; return -1; }
++
++    // SSL
++    rc = httpcSetSSLOpt(&ctx, SSL_COOKIE_CRYPTO);
++    if (R_FAILED(rc)) { httpcCloseContext(&ctx); err = "ssl opt failed"; return -1; }
++
++    // Begin
++    rc = httpcBeginRequest(&ctx);
++    if (R_FAILED(rc)) { httpcCloseContext(&ctx); err = "begin request failed"; return -1; }
++
++    // Response
++    u32 status = 0;
++    rc = httpcGetResponseStatusCode(&ctx, &status, 0);
++    if (R_FAILED(rc)) { httpcCloseContext(&ctx); err = "get status failed"; return -1; }
++
++    // Read body
++    out.clear();
++    uint8_t buf[4096];
++    while (true) {
++        u32 read = 0;
++        rc = httpcDownloadData(&ctx, buf, sizeof(buf), &read);
++        if (rc == HTTPC_RESULTCODE_DOWNLOADPENDING) continue;
++        if (R_FAILED(rc)) break;
++        if (read == 0) break;
++        out.insert(out.end(), buf, buf + read);
++    }
++    httpcCloseContext(&ctx);
++
++    if (status >= 400) { err = "HTTP " + std::to_string(status); return status; }
++    return status;
++}

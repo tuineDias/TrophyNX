@@ -1,0 +1,68 @@
+# Patch para adicionar R3 (StickR) e httpPost na platform abstraction
+# Apply with: patch -p1 < platform_patch_v2.diff
+
+--- a/include/platform.h
++++ b/include/platform.h
+@@ -40,6 +40,7 @@ struct PlayStats {
+     uint64_t lastPlayed = 0;
+ };
+
+ namespace plat {
++    int httpPost(const std::string& url, const std::vector<std::string>& headers,
++                 const std::string& body, std::vector<uint8_t>& out, std::string& err);
+     bool init(std::string& err);
+     void exit();
+     std::string userName();
+@@ -78,6 +79,7 @@ namespace plat {
+     BTN_L = 1024, BTN_R = 2048, BTN_ZR = 4096, BTN_ZL = 8192,
++    BTN_STICKR = 16384,
+ };
+
+ bool poll();
+--- a/source/platform_switch.cpp
++++ b/source/platform_switch.cpp
+@@ -34,6 +34,7 @@ static uint32_t mapButtons(uint64_t k) {
+     if (k & HidNpadButton_ZR) b |= plat::BTN_ZR;
+     return b;
++    if (k & HidNpadButton_StickR) b |= plat::BTN_STICKR;
+ }
+
+ bool plat::init(std::string& err) {
+@@ -296,3 +297,42 @@ uint32_t plat::buttonsHeld() { return mapButtons(g_held); }
+ void plat::sleepMs(int ms) { svcSleepThread((s64)ms * 1000000LL); }
+ #endif
++
++// ---------------------------------------------------------------- httpPost (for sync)
++int plat::httpPost(const std::string& url, const std::vector<std::string>& headers,
++                   const std::string& body, std::vector<uint8_t>& out, std::string& err) {
++    out.clear();
++    if (!netInit(err)) return 0;
++    CURL* c = curl_easy_init();
++    if (!c) { err = "curl init failed"; return 0; }
++    struct curl_slist* hl = nullptr;
++    for (const std::string& h : headers) hl = curl_slist_append(hl, h.c_str());
++    struct HttpCtx { std::vector<uint8_t>* out; } hc = {&out};
++    char ebuf[CURL_ERROR_SIZE] = "";
++    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
++    curl_easy_setopt(c, CURLOPT_HTTPHEADER, hl);
++    curl_easy_setopt(c, CURLOPT_POST, 1L);
++    curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.c_str());
++    curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, body.length());
++    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
++    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, [](char* p, size_t sz, size_t n, void* u) {
++        ((HttpCtx*)u)->out->insert(((HttpCtx*)u)->out->end(), (uint8_t*)p, (uint8_t*)p + sz * n);
++        return sz * n;
++    });
++    curl_easy_setopt(c, CURLOPT_WRITEDATA, &hc);
++    curl_easy_setopt(c, CURLOPT_ERRORBUFFER, ebuf);
++    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
++    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 100L);
++    curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
++    CURLcode r = curl_easy_perform(c);
++    long code = 0;
++    if (r == CURLE_OK) curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
++    else err = std::string(curl_easy_strerror(r)) + (ebuf[0] ? std::string(": ") + ebuf : "");
++    curl_slist_free_all(hl);
++    curl_easy_cleanup(c);
++    return (int)code;
++}
